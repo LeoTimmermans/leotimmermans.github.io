@@ -1,0 +1,127 @@
+---
+title: 'Machine Learning: Qualitative Activity Recognition of Weight Lifting Exercises'
+author: "L.J.J. Timmermans"
+date: "6 mei 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.    
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+## Getting and preprocessing the data
+Getting the files from internet and reading the data into R.
+```{r}
+##download the training and test files
+TrainUrl <-
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+TestUrl <-
+        "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+TrainFile <- "./data/pml-training.csv"
+TestFile <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(TrainFile)) {
+  download.file(TrainUrl, destfile = TrainFile)
+}
+if (!file.exists(TestFile)) {
+  download.file(TestUrl, destfile = TestFile)
+}
+##read the files
+TrainingData <- read.csv(TrainFile)
+TestData <- read.csv(TestFile)
+```
+The traingset consists of `r dim(TrainingData)[1]` observations in `r dim(TrainingData)[2]` variables, including the classe-variable which is the variable we want to predict.  
+  
+### Cleaning the trainingdata  
+First thing we need to do is get a clean training dataset for building the model. The assignment says we need to use data from accelerometers on the belt, forearm, arm, and dumbell. So we will limit the variables to the ones containing data from these sources and off course the classe variable.
+```{r}
+# Keep variables with data on: belt, forearm, arm, dumbell & the classe-variable
+KeepVars = grepl("belt|arm|dumbell|classe", names(TrainingData))
+TrainingClean <- TrainingData[, KeepVars]
+```
+There are some missing values in the dataset. From the `r dim(TrainingClean)[1]` observations there are only `r sum(complete.cases(TrainingClean))` observations with no missing values. Furthermore there some variables with only a few observations. Both issues will be a problem when building a model and more so when predicting with variables that possibly have no value. Therefore I will try and build a model without these variables.
+```{r}
+## invoke NA's for ""-values in variables
+TrainingClean[sapply(TrainingClean, function(x) as.character(x)=="")] <- NA
+## Remove variables containing NA's
+TrainingClean <- TrainingClean[, colSums(is.na(TrainingClean)) == 0] 
+```
+Now we need to check if there are variables that will not be contributing to a prediction model, because they have zero variance (a constant value from a variable will not add information to a prediction model).
+```{r message=FALSE, warning=FALSE}
+library(caret)
+## find variables with zero variance
+ZeroVariance <- nearZeroVar(TrainingClean, saveMetrics = TRUE)
+ZeroVariance <- ZeroVariance[ZeroVariance[,"zeroVar"] > 0, ]
+```
+There are no variables with zero variance, so all the variables stay in the dataset.  
+The cleaned training dataset has `r dim(TrainingClean)[2]` variables, including the classe-vaiable. Which means there are `r dim(TrainingClean)[2]-1` predictors that will be considered in the model making proces.  
+  
+### Create training and validation sets  
+Before the model can be made the data needs to be seperated in a training and validation set to be able to check (cross validate) the results from the model. We will split the set in a pure training set and a validation set based on 60% of observartions in the traing set and 40% in the validation set.
+```{r}
+set.seed(20170506) # For reproducibile purpose
+inTrain <- createDataPartition(TrainingClean$classe, p=0.75, list=F)
+ModelTrain <- TrainingClean[inTrain, ]
+ModelValidation <- TrainingClean[-inTrain, ]
+```
+## Modelling
+Random Forests automatically selects important variables and is robust to outliers and correlated covariates. Therefore I choose for making a model using random forests. 
+During the training of the model parallel processing and 5-fold cross validation is used.
+```{r message=FALSE, warning=FALSE, cache=TRUE}
+library(parallel)
+library(doParallel)
+## setup parallel processing
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+## setup trainControl object
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+## develop training model
+RfModelFit <- train(classe~., method="rf", data = ModelTrain , trControl = fitControl)
+
+## De-register parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+RfModelFit
+```
+  
+### Out of sample error
+We have split the data into a training and a validation set. To estimate the out of sample error we use the model on the validation set.
+```{r message=FALSE, warning=FALSE}
+PredRf <- predict(RfModelFit, ModelValidation)
+CfMatrix <- confusionMatrix(ModelValidation$classe, PredRf)
+CfMatrix
+```
+The estimated out of sample error is `r round((1-CfMatrix$overall['Accuracy'])*100, digits = 3)`% (95% confidence interval: `r round((1-CfMatrix$overall['AccuracyUpper'])*100, digits = 3)`% - `r round((1-CfMatrix$overall['AccuracyLower'])*100, digits = 3)`%).   
+  
+## Prediction of the 20 test cases
+Finally the model will be applied on the 20 test cases to get the predicted results on these test cases.
+```{r}
+predict(RfModelFit, TestData)
+```
+  
+## Appendix
+We need to see if there are interactions between variables. A correlation matrix is a good way to visualize this.
+```{r message=FALSE, warning=FALSE}
+## calculate and plot correlation matrix
+library(corrplot)
+CorrMatrix <- cor(TrainingClean[, -length(names(TrainingClean))])
+corrplot(CorrMatrix, method="color")
+```
+  
+There are a few variables with high correlation, but nothing too bad.  
+  
+Below plot shows which variables contribute most to the model:
+```{r message=FALSE, warning=FALSE}
+## determine variable importance in the model
+VImportance  <- varImp(RfModelFit)
+## plot top 20 variables contributing most to the model
+plot(VImportance, main = "Top 20 contributing variables", top = 20)
+```
